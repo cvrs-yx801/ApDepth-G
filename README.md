@@ -39,7 +39,7 @@ We recommend running the code in WSL2:
 Clone the repository (requires git):
 
 ```bash
-git clone https://github.com/cvrs-ys801/ApDepth-G.git
+git clone https://github.com/Haruko386/ApDepth-G.git
 cd ApDepth-G
 ```
 
@@ -144,6 +144,15 @@ bash script/eval/11_infer_nyu.sh
 # Evaluate predictions
 bash script/eval/12_eval_nyu.sh
 ```
+
+DIODE evaluation follows PPD's released mask refinement: valid GT must be finite
+and within [0.6, 350] metres, and pixels with an unnormalized Sobel response
+`abs(Gx) + abs(Gy) > 0.3` are excluded before alignment and metric calculation.
+`metrics.json` records this protocol. Existing predictions can be reused, but
+metrics from the previous unfiltered protocol must be recomputed.
+
+For per-image supervision coverage records and local bar-chart generation, see
+[the coverage guide](doc/supervision_coverage.md).
 
 Note: although the seed has been set, the results might still be slightly different on different hardware.
 
