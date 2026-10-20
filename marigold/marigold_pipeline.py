@@ -49,6 +49,7 @@ from .util.image_util import (
 )
 from DA2.depth_anything_v2.dpt import DepthAnythingV2
 from src.util.da2_config import resolve_da2_config, da2_checkpoint_path
+from src.util.conditioning import unet_inputs
 
 class MarigoldDepthOutput(BaseOutput):
     """
@@ -124,6 +125,7 @@ class MarigoldPipeline(DiffusionPipeline):
         default_processing_resolution: Optional[int] = None,
         da2_config: Optional[dict] = None,
         da2_conditioning_enabled: bool = True,
+        load_da2: bool = True,
     ):
         super().__init__()
         self.register_modules(
@@ -139,6 +141,7 @@ class MarigoldPipeline(DiffusionPipeline):
             default_denoising_steps=default_denoising_steps,
             default_processing_resolution=default_processing_resolution,
             da2_conditioning_enabled=da2_conditioning_enabled,
+            load_da2=load_da2,
         )
 
         self.scale_invariant = scale_invariant
@@ -149,6 +152,11 @@ class MarigoldPipeline(DiffusionPipeline):
         self.empty_text_embed = None
         self.da2_conditioning_enabled = da2_conditioning_enabled
 
+        self.da2 = None
+        if not load_da2:
+            if da2_conditioning_enabled:
+                raise ValueError("Explicit DA2 conditioning requires load_da2=true")
+            return
         da2_config = resolve_da2_config(da2_config)
         checkpoint_path = da2_checkpoint_path(da2_config)
         if not checkpoint_path.is_file():
@@ -165,7 +173,8 @@ class MarigoldPipeline(DiffusionPipeline):
         pipeline = super().to(*args, **kwargs)
         # DA2 is an external frozen prior, not a serialized Diffusers component.
         # Keep its original fp32 precision while following the pipeline device.
-        self.da2.to(device=self.device)
+        if self.da2 is not None:
+            self.da2.to(device=self.device)
         return pipeline
 
     @torch.no_grad()
@@ -427,6 +436,8 @@ class MarigoldPipeline(DiffusionPipeline):
         # DA2 raw output is unbounded relative disparity; infer_batch maps it
         # to the SD2 VAE's [-1, 1] image domain before this call.
         if self.da2_conditioning_enabled:
+            if self.da2 is None:
+                raise ValueError("DA2 conditioning requested without a loaded prior")
             da2_depth = self.da2.infer_batch(rgb_in).to(device)
             da2_depth_latent = self.encode_rgb(da2_depth)
         else:
@@ -459,9 +470,8 @@ class MarigoldPipeline(DiffusionPipeline):
             iterable = enumerate(timesteps)
 
         for i, t in iterable:
-            unet_input = torch.cat(
-                [rgb_latent, da2_depth_latent, depth_latent], dim=1
-            )  # this order is important
+            unet_input = unet_inputs(rgb_latent, da2_depth_latent, depth_latent,
+                                    int(self.unet.config.in_channels), self.da2_conditioning_enabled)
 
             # predict the noise residual
             noise_pred = self.unet(

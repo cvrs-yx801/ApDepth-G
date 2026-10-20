@@ -150,3 +150,21 @@ scene、精确 scene/variation/camera/frame 交集均为空。训练/验证均�
 新增 split 覆盖/自动识别/参数数量、数据集内落盘、原名单引用和 eval 拒绝变更名单的测试用例；未运行。
 初始工作区存在上轮已暂存修改，保留原暂存状态；本轮未提交或重新暂存。
 没有下载模型/数据集，没有实际生成掩码，没有访问论文目录。
+
+### 2026-10-20 补充：VKITTI 540 张稀疏名单
+
+用户最新明确要求：**仅从原 val 抽样**。已撤销此前多场景诊断候选，删除其名单及 YAML，
+并从生成脚本、审计 JSON 和使用说明中移除该选项。
+当前 split 与文档调整进度 **100%**；没有执行模型/指标测试。
+
+仅保留 `vkitti_val_sampled_540.txt`：6 variations × 2 cameras × 45，共 540 行，
+全部逐行来自原 `vkitti_val.txt`，与仓库 train 的帧和 scene 交集均为零。
+保留原始 train/val 以及该 540 张子集的内容，未启用场景泄漏、未改变默认 val 配置。
+抽样脚本只以 val 为候选来源；读取 train 仅用于交集审计。
+
+已更新 `data_split/vkitti/README.md`、README 入口和 val-only 审计记录；
+提供 `config/dataset/data_vkitti_val_sampled_540.yaml` 及 Linux 分割/复现命令。
+输出 SHA256 保持 `f3410f16f7597ddfd8f022079719d56038741727a66c4cf08e342739845ee947`。
+
+检查：540 行、无重复、全部属于原 val、无训练帧/scene 交集、来源 train/val 哈希不变，
+脚本静态语法和 YAML 引用检查。没有读取图像、依据预测筛图、下载、提交、模型推理或访问论文目录。

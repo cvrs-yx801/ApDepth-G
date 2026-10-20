@@ -341,6 +341,10 @@ if "__main__" == __name__:
     _pipeline_kwargs = dict(cfg.pipeline.kwargs) if cfg.pipeline.kwargs is not None else {}
     if cfg.get("da2") is not None:
         _pipeline_kwargs["da2_config"] = OmegaConf.to_container(cfg.da2, resolve=True)
+    _pipeline_kwargs["load_da2"] = bool(
+        cfg.get("da2_conditioning_enabled", True) or cfg.get("validity_guided_completion", {}).get("enabled", False)
+    )
+    _pipeline_kwargs["da2_conditioning_enabled"] = bool(cfg.get("da2_conditioning_enabled", True))
     model = MarigoldPipeline.from_pretrained(
         os.path.join(base_ckpt_dir, cfg.model.pretrained_path), **_pipeline_kwargs
     )

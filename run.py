@@ -211,9 +211,9 @@ if "__main__" == __name__:
 
     pipe: MarigoldPipeline = MarigoldPipeline.from_pretrained(
         checkpoint_path, variant=variant, torch_dtype=dtype,
-        **checkpoint_pipeline_kwargs(args.unet_checkpoint, args.da2_config),
+        **checkpoint_pipeline_kwargs(args.unet_checkpoint, args.da2_config, torch_dtype=dtype, load_components=True),
     )
-    apply_model_overrides(pipe, args.unet_checkpoint)
+    apply_model_overrides(pipe, args.unet_checkpoint, components_loaded=bool(args.unet_checkpoint))
     # unet = UNet2DConditionModel.from_pretrained(os.path.join(checkpoint_path, f'unet'))
     # pipe.unet = unet
 

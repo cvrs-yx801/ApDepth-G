@@ -62,6 +62,10 @@ def audit_datasets(config: dict[str, Any], protocol: Protocol,
                 split_path = cfg.get("data_split") or segmentation["split_list"]
                 item["input_files"][str(split_path)] = sha256(Path(split_path))
                 item["segmentation"] = segmentation
+                for path, expected in segmentation.get("source_inputs", {}).items():
+                    if sha256(Path(path)) != expected:
+                        raise ValueError(f"Original segmentation source changed: {path}")
+                    item["input_files"][path] = expected
                 if segmentation.get("limited"):
                     report["blockers"].append(f"{name}: limited segmentation subset")
         except (OSError, ValueError, KeyError, TypeError) as exc:

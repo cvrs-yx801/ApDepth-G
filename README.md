@@ -174,6 +174,12 @@ Note: although the seed has been set, the results might still be slightly differ
 | `kitti` | `data_kitti_eigen_test.yaml`，Eigen test | `kitti/kitti_eigen_split_test.tar`，或 `kitti/kitti_eigen_split_test` / `kitti` |
 | `diode` | `data_diode_all.yaml`，发布的全部验证集，包含 indoors/outdoors | `diode/diode_val.tar`，或 `diode/diode_val` / `diode` |
 
+**VKITTI 小规模评估：** 使用 `data_split/vkitti/vkitti_val_sampled_540.txt`，
+仅从原 5,364 张 `vkitti_val.txt` 抽取 540 张，不引入 train。
+按 6 种 variation × 2 个 camera 均衡取样，每组 45 张，覆盖原序列不同时间位置。
+使用时将该路径传给 `--data_split`，并选择新的 output_dir 运行名；原 train/val 均保留不变。
+详细抽样规则、配置和交集审计见 [VKITTI split 说明](data_split/vkitti/README.md)。
+
 例如 `BASE_DATA_DIR=/data` 时，VKITTI 解压后的第一张 RGB 应位于
 `/data/vkitti/vkitti_rgb/rgb/Scene01/clone/frames/rgb/Camera_0/rgb_00000.jpg`。
 目录结构不同时，在分割配置的 `datasets.<name>.data_dir` 中填写相对 `BASE_DATA_DIR` 的目录或归档路径；
@@ -458,11 +464,26 @@ DA2 input normalization or the conversion to the project's depth range.
 
 ### Paper ablations and evaluation
 
-The [ablation guide](config/ablation/README.md) maps all eleven configurations to
-the paper tables and provides training and evaluation commands. All ablations
-share progressive sampling and are evaluated on NYUv2 and KITTI. Only the full
-model is additionally evaluated on ETH3D, ScanNet, and DIODE for the main table.
-`script/eval_ablations.py` runs this plan and exports paper-scale metrics to CSV.
+The [ablation guide](config/ablation/README.md) maps all fifteen configurations to
+the current paper tables. Table III adds genuine 8-channel controls and evaluates
+sky metrics on DIODE Outdoor, KITTI and VKITTI2. Table IV adds separate SNR-floor
+and terminal-noise-fade controls, with NYUv2/KITTI valid-depth metrics and DIODE
+Outdoor sky metrics. Each runner trains one experiment, evaluates its final
+checkpoint, then starts the next:
+
+```bash
+python -B script/run_table3.py --mask_run "$MASK_RUN" --output_dir output/table3_eval
+python -B script/run_table4.py --mask_run "$MASK_RUN" --output_dir output/table4_eval
+```
+
+Set `BASE_DATA_DIR` and `BASE_CKPT_DIR` first. Add `--eval_only` for completed
+training runs, `--full_run <run-directory>` to reuse a matching full-model run,
+or `--dry_run` to preview. The shared `script/eval/0_infer_sky.sh` now performs
+both inference and sky evaluation. It reads each experiment's own
+`unet/config.json` and `scheduler/scheduler_config.json`; base checkpoint files
+are never replaced. Training budgets follow the current saved/configured
+`max_iter` (currently 8000 locally), rather than a hard-coded final step.
+The older `script/eval_ablations.py` remains a conventional benchmark utility.
 
 New checkpoints include `inference_settings.json`, which restores DA2 settings
 and the conditioning switch automatically during inference. Existing checkpoints
