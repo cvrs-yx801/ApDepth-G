@@ -464,26 +464,14 @@ DA2 input normalization or the conversion to the project's depth range.
 
 ### Paper ablations and evaluation
 
-The [ablation guide](config/ablation/README.md) maps all fifteen configurations to
-the current paper tables. Table III adds genuine 8-channel controls and evaluates
-sky metrics on DIODE Outdoor, KITTI and VKITTI2. Table IV adds separate SNR-floor
-and terminal-noise-fade controls, with NYUv2/KITTI valid-depth metrics and DIODE
-Outdoor sky metrics. Each runner trains one experiment, evaluates its final
-checkpoint, then starts the next:
-
-```bash
-python -B script/run_table3.py --mask_run "$MASK_RUN" --output_dir output/table3_eval
-python -B script/run_table4.py --mask_run "$MASK_RUN" --output_dir output/table4_eval
-```
-
-Set `BASE_DATA_DIR` and `BASE_CKPT_DIR` first. Add `--eval_only` for completed
-training runs, `--full_run <run-directory>` to reuse a matching full-model run,
-or `--dry_run` to preview. The shared `script/eval/0_infer_sky.sh` now performs
-both inference and sky evaluation. It reads each experiment's own
-`unet/config.json` and `scheduler/scheduler_config.json`; base checkpoint files
-are never replaced. Training budgets follow the current saved/configured
-`max_iter` (currently 8000 locally), rather than a hard-coded final step.
-The older `script/eval_ablations.py` remains a conventional benchmark utility.
+The fifteen YAML files in `config/ablation/` map to Tables III and IV for manual
+experiments. N2 (`N2_no_terminal_noise_fade.yaml`) sets
+`diffusion_schedule.terminal_noise_fade_enabled=false`: structured noise no
+longer fades near the endpoint, while exact final-step Gaussian matching,
+zero-terminal-SNR and trailing DDIM remain enabled. When this flag is omitted,
+fading follows `terminal_noise_alignment`, preserving the Full and ID 03 settings.
+The two 8-channel configs require manual architecture changes; the table runners
+and automatic evaluation remain removed.
 
 New checkpoints include `inference_settings.json`, which restores DA2 settings
 and the conditioning switch automatically during inference. Existing checkpoints

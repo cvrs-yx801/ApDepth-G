@@ -31,6 +31,8 @@ import numpy as np
 import torch
 from diffusers import DDPMScheduler
 from omegaconf import OmegaConf
+from torch.nn import Conv2d
+from torch.nn.parameter import Parameter
 from torch.optim import Adam
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
@@ -53,7 +55,6 @@ from src.util.diffusion_training import (
     align_inference_scheduler, align_training_scheduler,
     latent_validity_masks, min_snr_weight, terminal_noise_fade,
 )
-from src.util.conditioning import adapt_unet_input, unet_inputs
 
 
 class MarigoldTrainer:
@@ -85,11 +86,9 @@ class MarigoldTrainer:
         self.vis_loaders: List[DataLoader] = vis_dataloaders
         self.accumulation_steps: int = accumulation_steps
 
-        # Real architecture selection; legacy configs keep their 12ch behavior.
-        self.unet_in_channels = int(self.cfg.get("unet_in_channels", 12))
-        if self.unet_in_channels not in (8, 12):
-            raise ValueError("unet_in_channels must be 8 or 12")
-        if self.unet_in_channels != self.model.unet.config["in_channels"]:
+        # Adapt input layers. The method uses fixed 12-channel conditioning:
+        # RGB latent (4) + DA2 prior latent (4) + noisy depth latent (4).
+        if 12 != self.model.unet.config["in_channels"]:
             self._replace_unet_conv_in()
 
         # Encode empty text prompt
@@ -102,9 +101,8 @@ class MarigoldTrainer:
         self.model.vae.requires_grad_(False)
         self.model.text_encoder.requires_grad_(False)
         self.model.unet.requires_grad_(True)
-        if self.model.da2 is not None:
-            self.model.da2.requires_grad_(False)
-            self.model.da2.eval()
+        self.model.da2.requires_grad_(False)
+        self.model.da2.eval()
 
         # Optimizer !should be defined after input layer is adapted
         lr = self.cfg.lr
@@ -127,13 +125,11 @@ class MarigoldTrainer:
         if self.latent_gradient_weight < 0:
             raise ValueError("latent_gradient_weight must be non-negative")
 
-        # For ID08 keep 12ch and zero the prior channels. For genuine 8ch
-        # controls omit those channels; VGC may still use a training-only prior.
+        # Keep the 12-channel U-Net shape fixed for the DA2 ablation. Setting
+        # this to false replaces only the DA2 conditioning latent with zeros.
         self.da2_conditioning_enabled = bool(
             self.cfg.get("da2_conditioning_enabled", True)
         )
-        if self.unet_in_channels == 8 and self.da2_conditioning_enabled:
-            raise ValueError("8ch experiments must set da2_conditioning_enabled=false")
         self.model.da2_conditioning_enabled = self.da2_conditioning_enabled
 
         # Validity-Guided Completion (VGC)
@@ -142,8 +138,6 @@ class MarigoldTrainer:
         # supervision, which are common in outdoor sky / out-of-range areas.
         vgc_cfg = self.cfg.get("validity_guided_completion", {})
         self.vgc_enabled = bool(vgc_cfg.get("enabled", False))
-        if (self.da2_conditioning_enabled or self.vgc_enabled) and self.model.da2 is None:
-            raise ValueError("Training conditioning/VGC requires the frozen DA2 reference")
         self.vgc_min_invalid_ratio = float(vgc_cfg.get("min_invalid_ratio", 0.08))
         self.vgc_anchor_weight = float(vgc_cfg.get("anchor_weight", 0.02))
         self.vgc_smooth_weight = float(vgc_cfg.get("smooth_weight", 0.005))
@@ -243,10 +237,29 @@ class MarigoldTrainer:
         self.in_evaluation = False
         self.global_seed_sequence: List = []  # consistent global seed sequence, used to seed random generator, to ensure consistency when resuming
 
+    # 12 channels
     def _replace_unet_conv_in(self):
-        adapt_unet_input(self.model.unet, self.unet_in_channels)
-        logging.info("U-Net initialized from 4ch base: repeat weights x%d / %d, copy bias; %dch",
-                     self.unet_in_channels // 4, self.unet_in_channels // 4, self.unet_in_channels)
+        # replace the first layer to accept 12 in_channels
+        _weight = self.model.unet.conv_in.weight.clone()  # [320, 4, 3, 3]
+        _bias = self.model.unet.conv_in.bias.clone()      # [320]
+        _weight = _weight.repeat((1, 3, 1, 1))  
+
+        _weight *= (1.0 / 3.0)
+        
+        _n_convin_out_channel = self.model.unet.conv_in.out_channels
+        _new_conv_in = Conv2d(
+            12, _n_convin_out_channel, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1)
+        )
+        _new_conv_in.weight = Parameter(_weight)
+        _new_conv_in.bias = Parameter(_bias)
+        self.model.unet.conv_in = _new_conv_in
+        
+        logging.info("Unet conv_in layer is replaced to accept 12 channels")
+        
+        # replace config
+        self.model.unet.config["in_channels"] = 12
+        logging.info("Unet config is updated to 12 channels")
+        return
 
     def train(self, t_end=None):
         logging.info("Start training")
@@ -302,8 +315,7 @@ class MarigoldTrainer:
                     # rgb is ApDepth [-1, 1]. infer_batch converts it to DA2's
                     # [0, 1] + ImageNet-normalized DINOv2 input, then returns
                     # near=-1/far=+1 depth in the SD2 VAE input range.
-                    da2_depth = (self.model.da2.infer_batch(rgb).to(device)
-                                 if self.da2_conditioning_enabled or self.vgc_enabled else torch.zeros_like(rgb))
+                    da2_depth = self.model.da2.infer_batch(rgb).to(device)
                     da2_far_pixels = (
                         da2_depth[:, :1] >= self.vgc_far_depth_threshold
                     )
@@ -335,8 +347,7 @@ class MarigoldTrainer:
                     )  # [B, 4, h, w]
                     # infer_batch has already mapped raw DA2 disparity to
                     # [-1, 1]; encode_rgb must never receive raw DA2 output.
-                    da2_depth_latent = (self.model.encode_rgb(da2_depth)
-                                        if self.da2_conditioning_enabled or self.vgc_enabled else None)
+                    da2_depth_latent = self.model.encode_rgb(da2_depth)  # [B, 4, h, w]
                 
                 # Sample a random timestep for each image
                 timesteps = torch.randint(
@@ -390,7 +401,7 @@ class MarigoldTrainer:
                         generator=rand_num_generator,
                     )
                     noise = torch.where(terminal, standard_noise, noise)
-                
+
                 terminal_standard_noise = noise
                 if self.offset_noise_strength > 0:
                     offset_noise = torch.randn(
@@ -400,8 +411,8 @@ class MarigoldTrainer:
                     ) * self.offset_noise_strength * terminal_fade.view(-1, 1, 1, 1)
                     noise = noise + offset_noise
                 if self.terminal_noise_alignment:
-                    # N2 keeps exact Gaussian matching at T-1 even with fading
-                    # disabled; offset augmentation must not re-contaminate it.
+                    # N2 disables fading, but T-1 must still be standard
+                    # Gaussian: remove the offset augmentation at this endpoint.
                     noise = torch.where(terminal, terminal_standard_noise, noise)
 
                 # Add noise to the latents (diffusion forward process)
@@ -415,8 +426,14 @@ class MarigoldTrainer:
                 )  # [B, 77, 1024]
 
                 # Concat rgb and depth latents
-                cat_latents = unet_inputs(rgb_latent, da2_depth_latent, noisy_latents,
-                                         self.unet_in_channels, self.da2_conditioning_enabled)
+                da2_condition_latent = (
+                    da2_depth_latent
+                    if self.da2_conditioning_enabled
+                    else torch.zeros_like(da2_depth_latent)
+                )
+                cat_latents = torch.cat(
+                    [rgb_latent, da2_condition_latent, noisy_latents], dim=1
+                )  # [B, 12, h, w]
                 cat_latents = cat_latents.float()
 
                 # Predict the noise residual
@@ -900,8 +917,6 @@ class MarigoldTrainer:
         # Store inference-relevant ablation switches beside every checkpoint,
         # including final checkpoints that do not contain trainer.ckpt.
         settings = {
-            "unet_in_channels": self.unet_in_channels,
-            "conv_in_initialization": f"4ch SD2 weights repeated {self.unet_in_channels // 4} times and divided by {self.unet_in_channels // 4}; bias copied",
             "da2_conditioning_enabled": self.da2_conditioning_enabled,
             "da2_config": OmegaConf.to_container(self.cfg.da2, resolve=True)
             if self.cfg.get("da2") is not None else None,

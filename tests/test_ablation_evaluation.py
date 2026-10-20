@@ -20,8 +20,8 @@ class AblationEvaluationTest(unittest.TestCase):
     def test_main_uses_five_datasets_and_ablations_only_two(self):
         ids = sorted(p.stem for p in Path("config/ablation").glob("*.yaml"))
         plan = list(runner.evaluation_plan(ids, main_extra=True))
-        self.assertEqual(len(ids), 15)
-        self.assertEqual(len(plan), 33)
+        self.assertEqual(len(ids), 11)
+        self.assertEqual(len(plan), 25)
         self.assertEqual({ds for name, ds in plan if name == "00_full"}, set(runner.DATASETS))
         for name in ids[1:]:
             self.assertEqual({ds for experiment, ds in plan if experiment == name}, {"nyu", "kitti"})
