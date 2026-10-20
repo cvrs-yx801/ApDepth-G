@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+import json
 
 from .datasets import index_dataset, inspect_sample, read_split
 from .schemas import Protocol, Sample, sha256
@@ -42,6 +43,9 @@ def audit_datasets(config: dict[str, Any], protocol: Protocol,
         item: dict[str, Any] = {"status": "pending", "total": 0, "inspected": 0, "selected": 0,
                                 "failures": [], "source": cfg}
         report["datasets"][name] = item
+        if cfg.get("mask_format") == "binary_manifest":
+            # Keep the original official-label SCOE table separate from this user-requested diagnostic protocol.
+            report["blockers"].append(f"{name}: Mask2Former pseudo labels; diagnostic protocol, not official sky GT")
         if name == "vkitti2":
             try:
                 item["split_audit"] = split_audit(Path(cfg["train_list"]), Path(cfg["test_list"]))
@@ -52,6 +56,14 @@ def audit_datasets(config: dict[str, Any], protocol: Protocol,
         try:
             rows = index_dataset(name, cfg)
             item["total"] = len(rows)
+            if cfg.get("mask_format") == "binary_manifest":
+                item["input_files"] = {cfg[key]: sha256(Path(cfg[key])) for key in ("manifest", "segmentation_report")}
+                segmentation = json.loads(Path(cfg["segmentation_report"]).read_text(encoding="utf-8"))
+                split_path = cfg.get("data_split") or segmentation["split_list"]
+                item["input_files"][str(split_path)] = sha256(Path(split_path))
+                item["segmentation"] = segmentation
+                if segmentation.get("limited"):
+                    report["blockers"].append(f"{name}: limited segmentation subset")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             item["failures"].append({"failure_reason": str(exc)})
             item["status"] = "BLOCKED"

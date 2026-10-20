@@ -4,6 +4,16 @@
 原训练、推理及 `eval.py` 保持不变。**本轮按用户要求不执行测试、不下载模型/数据集。**
 测试用例已提供，下面的运行命令是后续使用说明，不代表已经执行。
 
+2026-10-20 新增用户指定的 **Mask2Former 伪标签诊断流程**：`script/segment_sky.py`
+从 `BASE_DATA_DIR` 的目录或 tar 读取 VKITTI2、KITTI、DIODE RGB，生成 mask 和可用的 SCOE 配置。
+运行方法见 [README](../README.md#mask2former-天空分割vkitti2--kitti--diode)。
+以下 HRWSI+官方 VKITTI2 主协议保持原定义；伪标签流程单独标记，支持三数据集诊断表。
+分割阶段可使用 GPU；数值评价阶段仍为 CPU。
+分割入口必填 `--data_split`，可指定 `--dataset kitti` 等数据集；多个 dataset 与 split 按顺序一一对应。
+原始 split 路径保留到生成的推理/SCOE 配置，eval 核验相同名单与哈希。
+掩码位于数据集自己的 `sky_masks/<运行名>/` 下；tar 数据位于归档所在目录。
+项目 `output/sky_segmentation/<运行名>/` 只保存元数据、预览和配置。
+
 ## 当前交付与边界
 
 - 新增 `src/sky_eval/`、`script/sky_eval.py`、`config/sky_eval.yaml`、`tests/sky_eval/test_scoe.py`。
@@ -154,6 +164,8 @@ models:
 `run` 自动解析 `<root>/depth_npy/<stem>_pred.npy`。
 `infer_vkitti` 自动解析 `<root>/<rgb relative parent>/pred_<rgb stem>.npy`；
 如果旧输出父目录多了 `rgb/` 前缀，调整 root 或用显式映射。
+新增 `infer_split` 用于 VKITTI2/KITTI/DIODE，解析
+`<root>/<dataset>/<rgb relative parent>/pred_<rgb stem>.npy`，保持不同数据集的预测隔离。
 只接受 float32/float64 二维 `.npy`；只有配置 `squeeze_leading_channel: true` 才允许 `[1,H,W]`。
 NaN/Inf 在整张图上检查，不丢掉困难像素。输入 PNG、整数深度、任意其他维度一律拒绝。
 

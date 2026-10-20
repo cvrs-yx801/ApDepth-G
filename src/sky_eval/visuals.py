@@ -9,9 +9,15 @@ from PIL import Image, ImageDraw
 from .masks import Regions
 
 
-def mask_diagnostic(rgb_path: Path, regions: Regions, output: Path) -> None:
-    with Image.open(rgb_path) as source:
-        rgb = source.convert("RGB")
+def _rgb_copy(source: Path | Image.Image) -> Image.Image:
+    if isinstance(source, Image.Image):
+        return source.convert("RGB")
+    with Image.open(source) as image:
+        return image.convert("RGB")
+
+
+def mask_diagnostic(rgb_path: Path | Image.Image, regions: Regions, output: Path) -> None:
+    rgb = _rgb_copy(rgb_path)
     base = np.asarray(rgb)
     panels = [rgb.copy()]
     for mask, color in ((regions.sky, (70, 180, 255)), (regions.interior, (50, 230, 80))):
@@ -34,10 +40,9 @@ def mask_diagnostic(rgb_path: Path, regions: Regions, output: Path) -> None:
                           f"Normals: yellow = foreground; pairs={regions.n_pairs}"], output)
 
 
-def prediction_diagnostic(rgb_path: Path, predictions: dict[str, NDArray[np.float64]], output: Path) -> None:
+def prediction_diagnostic(rgb_path: Path | Image.Image, predictions: dict[str, NDArray[np.float64]], output: Path) -> None:
     """Shared whole-image display range, after documented direction conversion."""
-    with Image.open(rgb_path) as source:
-        panels = [source.convert("RGB")]
+    panels = [_rgb_copy(rgb_path)]
     low = min(float(d.min()) for d in predictions.values())
     high = max(float(d.max()) for d in predictions.values())
     labels = ["RGB"]

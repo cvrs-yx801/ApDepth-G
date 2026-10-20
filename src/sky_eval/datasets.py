@@ -12,6 +12,7 @@ from PIL import Image
 
 from .masks import BoolArray
 from .schemas import Sample, confined, sha256
+from .rgb_io import normalized_relative, read_rgb
 
 VKITTI_KEY = re.compile(r"(Scene\d+)/([^/]+)/frames/rgb/(Camera_\d+)/rgb_(\d+)\.[^/\s]+")
 
@@ -56,13 +57,17 @@ def rgb_root(config: dict[str, Any]) -> Path:
 
 
 def mask_root(config: dict[str, Any]) -> Path:
-    return Path(config.get("class_seg_root") or config["root"])
+    return Path(config.get("mask_root") or config.get("class_seg_root") or config["root"])
+
+
+def sample_rgb(sample: Sample, config: dict[str, Any]) -> Image.Image:
+    return read_rgb(rgb_root(config), sample.rgb_path)[0]
 
 
 def load_mask(sample: Sample, config: dict[str, Any]) -> BoolArray:
     path = confined(mask_root(config), sample.sky_mask_path)
     with Image.open(path) as image:
-        if sample.dataset == "vkitti2":
+        if sample.dataset == "vkitti2" and config.get("mask_format") != "binary_manifest":
             palette = read_colors(confined(mask_root(config), str(sample.colors_path)))
             rgb = np.asarray(image.convert("RGB"))
             packed = (rgb[..., 0].astype(np.uint32) << 16) | (rgb[..., 1].astype(np.uint32) << 8) | rgb[..., 2]
@@ -85,6 +90,36 @@ def load_mask(sample: Sample, config: dict[str, Any]) -> BoolArray:
 
 
 def index_dataset(name: str, config: dict[str, Any]) -> list[Sample]:
+    if config.get("mask_format") == "binary_manifest":
+        if name not in ("vkitti2", "kitti", "diode"):
+            raise ValueError(f"Unsupported pseudo-label dataset: {name}")
+        for key in ("rgb_root", "mask_root", "manifest", "segmentation_report"):
+            if not config.get(key):
+                raise ValueError(f"Missing pseudo-label configuration: {key}")
+        manifest = Path(config["manifest"])
+        report = json.loads(Path(config["segmentation_report"]).read_text(encoding="utf-8"))
+        if report["dataset"] != name or report["failed"] or report["succeeded"] != report["requested"]:
+            raise ValueError("Incomplete or mismatched segmentation run; do not silently omit failed images")
+        if sha256(manifest) != report["manifest_sha256"]:
+            raise ValueError("Segmentation manifest changed after generation")
+        split_path = Path(config.get("data_split") or report["split_list"])
+        if sha256(split_path) != report["split_list_sha256"]:
+            raise ValueError("data_split changed after mask generation; regenerate masks for the new split")
+        expected_paths = [normalized_relative(line.split()[0]) for line in
+                          split_path.read_text(encoding="utf-8-sig").splitlines()
+                          if line.strip() and not line.lstrip().startswith("#")]
+        if len(expected_paths) != report["total_split"] or len(expected_paths) != len(set(expected_paths)):
+            raise ValueError("data_split size mismatch or duplicate RGB paths")
+        if report["requested"] > len(expected_paths) or (not report.get("limited") and report["requested"] != len(expected_paths)):
+            raise ValueError("Incomplete split coverage in segmentation report")
+        rows = [Sample(**json.loads(line)) for line in manifest.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if len(rows) != report["requested"] or len({s.sample_id for s in rows}) != len(rows):
+            raise ValueError("Segmentation sample count mismatch or duplicate IDs")
+        if any(s.dataset != name or s.mask_source != "mask2former_pseudo_semantic_sky" for s in rows):
+            raise ValueError("Pseudo-label manifests must retain their explicit Mask2Former source")
+        if [s.rgb_path for s in rows] != expected_paths[:report["requested"]]:
+            raise ValueError("Segmentation manifest does not match data_split paths/order")
+        return rows
     if name == "vkitti2":
         for key in ("rgb_root", "class_seg_root", "test_list"):
             if not config.get(key):
@@ -125,15 +160,17 @@ def index_dataset(name: str, config: dict[str, Any]) -> list[Sample]:
 
 
 def inspect_sample(sample: Sample, config: dict[str, Any]) -> tuple[Sample, BoolArray]:
-    rgb_path = confined(rgb_root(config), sample.rgb_path)
-    with Image.open(rgb_path) as image:
-        width, height = image.size
-        image.verify()
+    image, rgb_digest = read_rgb(rgb_root(config), sample.rgb_path)
+    width, height = image.size
     sky = load_mask(sample, config)
     if sky.shape != (height, width):
         raise ValueError("rgb_mask_shape_mismatch")
     mask_path = confined(mask_root(config), sample.sky_mask_path)
     colors_path = confined(mask_root(config), sample.colors_path) if sample.colors_path else None
+    mask_digest = sha256(mask_path)
+    if config.get("mask_format") == "binary_manifest":
+        if rgb_digest != sample.rgb_sha256 or mask_digest != sample.mask_sha256:
+            raise ValueError("RGB/pseudo-mask content changed after segmentation")
     return replace(sample, width=width, height=height, sky_ratio=float(sky.mean()),
-                   rgb_sha256=sha256(rgb_path), mask_sha256=sha256(mask_path),
+                   rgb_sha256=rgb_digest, mask_sha256=mask_digest,
                    colors_sha256=sha256(colors_path) if colors_path else None), sky

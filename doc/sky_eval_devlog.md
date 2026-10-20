@@ -83,3 +83,70 @@ scene、精确 scene/variation/camera/frame 交集均为空。训练/验证均�
 仍待完成：用户允许后运行测试并修复问题；补齐真实语义标注与 HRWSI；目标 checkpoint 训练历史核验；
 真实 mask 至少 50 张 QA、配对保留率审查、模型输出表示审查及全量评估。
 正式表格目前无数据；默认配置中 models 为空，不编造论文结果。
+
+## 2026-10-20：Mask2Former 伪标签分割入口与三数据集接入
+
+用户授权新增研究流程：使用 Mask2Former 分割 VKITTI、KITTI、DIODE 评估集天空，
+从 BASE_DATA_DIR 读取文件，提供项目代码及 README 运行说明。
+本次代码/文档编写进度 **100%**；运行验收 **未开始**，沿用用户“先不用测试”的要求。
+这不更新此前原始 HRWSI+官方 VKITTI 协议的真实实验完成率。
+
+| 子阶段 | 状态 |
+|---|---|
+| 本地数据配置、目录/tar 与 RGB 相对路径核验 | 完成源码阅读 |
+| 离线 Mask2Former 分割、mask/manifest/元数据/QA 输出 | 完成实现，未运行 |
+| SCOE binary_manifest、tar RGB、三数据集诊断导出 | 完成实现，未运行 |
+| README、全图深度推理配置生成、模型记录模板 | 完成 |
+| 静态检查 | 通过语法/注解/空白检查 |
+| 模型推理与测试 | 未运行；未下载模型/数据集/依赖 |
+
+起始 commit：`5b98fda78bcd846981b631cd501a919f66434383`；限定非论文目录的初始 git status 干净。
+读取了 `config/dataset/data_vkitti_val.yaml`、KITTI Eigen test、DIODE all 配置、对应名单和 dataset/infer 实现。
+确认这些数据集均以名单第一列读 RGB，现有 KITTI/VKITTI 默认使用 benchmark crop。
+因此分割固定使用完整 RGB，另导出 `depth_inference.yaml` 关闭 crop，复用现有 `infer.py`，不改常规 benchmark 配置。
+
+新增：`script/segment_sky.py`、`config/sky_segmentation.yaml`、
+`config/sky_eval_mask2former_models.example.yaml`、`src/sky_eval/rgb_io.py`、
+`src/sky_eval/segmentation.py`、`tests/sky_eval/test_sky_segmentation.py`。
+更新 README、SCOE 指南与 sky_eval 的数据/审计/预测/可视化/报告适配。
+
+实现约定：
+
+- BASE_DATA_DIR 下按原配置与明确回退目录寻找 RGB，直接读 tar，不解压、不读 depth GT。
+- VKITTI2 使用仓库 Scene01 val，KITTI 用 Eigen test，DIODE 默认全部发布 val（含室内）；保留各自实际划分名称。
+- 本地完整 Transformers checkpoint，强制 `local_files_only=True` 和离线环境；阻止嵌套 pretrained-backbone 下载。
+- 从 `id2label` 查 sky；使用 processor 的 semantic postprocess 还原到原始 H/W；0/255 二值 PNG。
+- 无天空也输出，分割失败记录每张图；存在失败时不导出 SCOE 配置。
+- 每张图原始 RGB/mask 哈希、名单/权重/processor/源码版本留档；同一套伪标签供所有深度模型使用。
+- 显式标记 Mask2Former pseudo labels，诊断表支持 VKITTI2/KITTI/DIODE，原官方标签主表的 formal 检查保留。
+
+已阅读核对的接口参考（仅网页说明，未下载权重/数据）：
+[Transformers Mask2Former](https://huggingface.co/docs/transformers/en/model_doc/mask2former)、
+[ADE20K 模型说明](https://huggingface.co/facebook/mask2former-swin-large-ade-semantic)。
+
+实际检查：标准库 AST 解析、函数参数/返回注解扫描、尾随空白扫描、限定文件 `git diff --check`。
+新增 6 个离线 fixture 测试方法，覆盖目录/tar 一致性、重复归档键、BASE_DATA_DIR 选路、sky 类别编号查找、
+零天空输出、SCOE 读入、全图推理配置、预测命名与失败不导出；**均未执行**。
+未调用真实 Mask2Former、未运行 CLI dry-run 或模型推理，也未修改 `ApDepth-G-paper` 或 `eval.py`。
+
+### 2026-10-20 补充：显式 data_split 与数据集目录内掩码
+
+用户明确要求使用其现有 split，通过 `--data_split` 传入，并与后续 eval 共用；掩码直接生成在数据集文件夹内。
+本次实现/文档调整进度 **100%**，运行测试仍未开始。
+
+- `segment_sky.py --data_split` 为必填，可接收多个名单，与 `--datasets` 按顺序一一对应。
+  同时支持单数 `--dataset`，标准 `data_split/<dataset>/...` 路径可自动识别数据集；任意自定义路径需明确指定 dataset。
+- 传入名单覆盖 dataset YAML 的 filenames；不修改原始文件。split 的额外列在快照中保留。
+- mask 改为 `<RGB目录>/sky_masks/<output_dir最后一级>/...sky.png`；tar 数据改为其所在目录下的 `sky_masks`。
+  项目 `output/sky_segmentation/<运行名>/` 仅保存索引、日志、预览和生成配置。
+  输出目录和数据集内掩码运行目录均拒绝覆盖，支持换运行名重做。
+- `depth_inference.yaml` 的 filenames 直接引用用户原始 split；若限量或原名单含空行/注释，
+  则为兼容旧 loader 使用相同有效行/顺序的快照。SCOE 中的 data_split 始终保存原始名单路径。
+- eval 核对原始 split 哈希、总数、图像集合与顺序，并将名单加入 audit 冻结检查，阻止换名单后复用旧掩码。
+- README 的单数据集、三数据集、PowerShell 和后续 eval 命令均同步更新。
+
+已执行：标准库 AST、类型注解和空白静态扫描（6 个变动 Python 文件），分割 YAML 解析，限定路径 git diff --check。
+检查通过；Git 仅提示部分文件下次操作会将 LF 转为 CRLF，未执行行尾转换。
+新增 split 覆盖/自动识别/参数数量、数据集内落盘、原名单引用和 eval 拒绝变更名单的测试用例；未运行。
+初始工作区存在上轮已暂存修改，保留原暂存状态；本轮未提交或重新暂存。
+没有下载模型/数据集，没有实际生成掩码，没有访问论文目录。

@@ -17,7 +17,7 @@ import yaml
 
 from .aggregate import aggregate, compare
 from .audit import audit_datasets, audit_markdown, split_audit
-from .datasets import inspect_sample, rgb_root
+from .datasets import inspect_sample, sample_rgb
 from .masks import Regions, build_regions
 from .metrics import METRICS, score
 from .predictions import prediction_path, read_prediction, validate_model
@@ -43,7 +43,7 @@ def load_config(path: Path, run_id: str | None) -> tuple[dict[str, Any], Protoco
     config["protocol"] = asdict(protocol)
     config.setdefault("models", {})
     for section in config["datasets"].values():
-        for key in ("root", "rgb_root", "class_seg_root", "manifest", "train_list", "test_list"):
+        for key in ("root", "rgb_root", "mask_root", "class_seg_root", "manifest", "segmentation_report", "data_split", "train_list", "test_list"):
             if section.get(key):
                 section[key] = str(safe_absolute(section[key]))
     for model in config["models"].values():
@@ -131,6 +131,9 @@ def verify_config(config: dict[str, Any], run: Path) -> None:
     if source_hashes() != read_json(run / "repository_state.json")["source_hashes"]:
         raise ValueError("SCOE source changed after audit; use a new run_id")
     for name, item in read_json(run / "dataset_audit.json")["datasets"].items():
+        for path, expected in item.get("input_files", {}).items():
+            if sha256(safe_absolute(path)) != expected:
+                raise ValueError(f"Segmentation input changed after audit: {path}")
         if "split_audit" in item:
             for key in ("train_list", "test_list"):
                 if sha256(Path(config["datasets"][name][key])) != item["split_audit"][key + "_sha256"]:
@@ -179,7 +182,7 @@ def prepare(config: dict[str, Any], protocol: Protocol, run: Path) -> int:
         qa_counts[sample.dataset] = ordinal + 1
         stride = max(1, dataset_counts[sample.dataset] // 50)
         if ordinal % stride == 0 and ordinal // stride < 50:
-            mask_diagnostic(confined(rgb_root(ds), sample.rgb_path), regions,
+            mask_diagnostic(sample_rgb(sample, ds), regions,
                             diagnostics / f"{cache_key(sample)}.png")
     write_csv(run / "pair_coverage.csv", coverage)
     write_text(run / "manifest.jsonl", "".join(json.dumps(s.to_dict(), ensure_ascii=False) + "\n" for s in samples))
@@ -345,16 +348,16 @@ def report(config: dict[str, Any], protocol: Protocol, run: Path, formal: bool) 
         return 2
     write_csv(folder / "comparison.csv", comparisons)
     write_json(folder / "comparison.json", comparisons)
-    title = "SCOE formal comparison" if formal else "SCOE DIAGNOSTIC ONLY (synthetic if fixture data)"
+    pseudo = any(cfg.get("mask_format") == "binary_manifest" for cfg in config["datasets"].values())
+    title = ("SCOE formal comparison" if formal else "SCOE DIAGNOSTIC ONLY: Mask2Former pseudo labels"
+             if pseudo else "SCOE DIAGNOSTIC ONLY (synthetic if fixture data)")
     lines = [f"# {title}", "", "逐图等权；各数据集、各指标使用所有模型的共同有效样本。N/A 表示未核实或无有效样本。", "",
              "| Model | Dataset | Metric | Mean | N | Missing |", "|---|---|---|---:|---:|---:|"]
     for row in comparisons:
         mean = f"{row['mean']:.8g}" if row["mean"] is not None else "N/A"
         lines.append(f"| {row['model_id']} | {row['dataset']} | {row['metric']} | {mean} | {row['N']} | {row['failures']} |")
-    columns = [(dataset, metric) for dataset in ("hrwsi", "vkitti2") for metric in METRICS]
-    # Synthetic fixtures have their own explicitly labelled table, never real dataset columns.
-    if set(r["dataset"] for r in comparisons) == {"synthetic"}:
-        columns = [("synthetic", metric) for metric in METRICS]
+    table_datasets = ("hrwsi", "vkitti2") if formal else sorted({r["dataset"] for r in comparisons})
+    columns = [(dataset, metric) for dataset in table_datasets for metric in METRICS]
     lookup = {(r["model_id"], r["dataset"], r["metric"]): r for r in comparisons}
     headers = ["Method"] + [f"{ds} {metric}" for ds, metric in columns]
     tex = ["% " + title, r"\begin{tabular}{l" + "r" * len(columns) + "}",
@@ -390,7 +393,7 @@ def report(config: dict[str, Any], protocol: Protocol, run: Path, formal: bool) 
             if row["prediction_sha256"]:
                 predictions[name] = read_prediction(Path(row["prediction_path"]), model, (sample.height, sample.width))[0]
         if predictions:
-            prediction_diagnostic(confined(rgb_root(config["datasets"][sample.dataset]), sample.rgb_path), predictions,
+            prediction_diagnostic(sample_rgb(sample, config["datasets"][sample.dataset]), predictions,
                                   diagnostics / f"{cache_key(sample)}.png")
     logging.info("Report written: %s", folder)
     return 0

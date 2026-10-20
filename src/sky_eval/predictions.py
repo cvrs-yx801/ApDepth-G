@@ -29,7 +29,7 @@ def validate_model(model: dict[str, Any]) -> None:
         raise ValueError("Cropped predictions cannot be stretched into full-frame SCOE inputs")
     if model.get("resampling", "reject") != "reject":
         raise ValueError("v1 requires full-resolution predictions; resampling is not implemented")
-    if model["layout"] not in ("run", "infer_vkitti", "explicit"):
+    if model["layout"] not in ("run", "infer_vkitti", "infer_split", "explicit"):
         raise ValueError("Unknown prediction layout")
     if model["layout"] == "explicit" and not isinstance(model.get("files"), dict):
         raise ValueError("explicit layout requires sample_id -> relative .npy files")
@@ -43,6 +43,10 @@ def prediction_path(model: dict[str, Any], sample: Sample) -> Path:
         if sample.dataset != "vkitti2":
             raise ValueError("infer_vkitti layout is only valid for VKITTI id naming")
         relative = str(rgb.parent / f"pred_{rgb.stem}.npy")
+    elif model["layout"] == "infer_split":
+        if sample.dataset not in ("vkitti2", "kitti", "diode"):
+            raise ValueError("infer_split supports VKITTI2, KITTI and DIODE id-mode outputs")
+        relative = str(Path(sample.dataset) / rgb.parent / f"pred_{rgb.stem}.npy")
     else:
         if sample.sample_id not in model["files"]:
             raise ValueError("missing_prediction_mapping")
